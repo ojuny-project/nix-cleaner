@@ -1,0 +1,45 @@
+name: docs
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  docs:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select documentation paths
+        id: paths
+        shell: bash
+        run: |
+          targets=(README.md)
+          if [ -d docs ]; then
+            targets+=(docs)
+          fi
+          printf 'targets=%s\n' "${targets[*]}" >> "$GITHUB_OUTPUT"
+
+      - name: Check links
+        uses: lycheeverse/lychee-action@v2
+        with:
+          args: --offline --no-progress ${{ steps.paths.outputs.targets }}
+
+      - name: Scan for placeholders
+        shell: bash
+        env:
+          TARGETS: ${{ steps.paths.outputs.targets }}
+        run: |
+          pattern='your-org|github:you/|TODO|TBD|coming soon|see defaults/schema'
+          status=0
+          grep -RIniE --exclude-dir=notes -- "$pattern" $TARGETS || status=$?
+          if [ "$status" -eq 0 ]; then
+            echo "Placeholder strings found; replace them before merging." >&2
+            exit 1
+          fi
+          if [ "$status" -gt 1 ]; then
+            exit "$status"
+          fi

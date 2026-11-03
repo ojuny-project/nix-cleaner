@@ -388,7 +388,7 @@ impl RootsPanel {
         }
 
         let body = format!(
-            "This unlinks {} gc roots and then runs nix-collect-garbage.\n\nFreeable space: {}\n\nRoots:\n{}",
+            "This unlinks {} gc roots and runs nix-collect-garbage.\n\nFreeable space: {}\n\nRoots:\n{}",
             links.len(),
             format::bytes(estimate),
             labels

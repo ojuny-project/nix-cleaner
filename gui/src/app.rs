@@ -267,11 +267,11 @@ impl App {
             };
             let body = format!(
                 "store paths: {} ({} live, {} dead)\n\
-                 our live bytes: {}\n\
-                 our dead bytes: {}\n\n\
+                 scan live bytes: {}\n\
+                 scan dead bytes: {}\n\n\
                  nix reports {} dead paths, {}\n\
                  df reports {} used on the store filesystem\n\n\
-                 difference between our dead set and nix: {}",
+                 difference between the scan dead set and nix: {}",
                 result.store_paths,
                 result.live_paths,
                 result.dead_paths,

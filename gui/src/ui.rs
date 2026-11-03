@@ -1,4 +1,6 @@
 use std::cell::RefCell;
+use std::os::unix::fs::PermissionsExt;
+use std::path::PathBuf;
 use std::rc::Rc;
 
 use adw::prelude::*;
@@ -24,7 +26,6 @@ pub fn info(parent: &impl IsA<gtk::Window>, heading: &str, body: &str) {
     let text = gtk::Label::new(Some(body));
     text.set_xalign(0.0);
     text.set_wrap(true);
-    text.set_selectable(true);
 
     let button = gtk::Button::with_label("Close");
     button.set_halign(gtk::Align::End);
@@ -128,8 +129,18 @@ pub fn helper_path() -> Option<std::path::PathBuf> {
     None
 }
 
+fn pkexec_path() -> PathBuf {
+    let wrapper = PathBuf::from("/run/wrappers/bin/pkexec");
+    if let Ok(metadata) = std::fs::metadata(&wrapper) {
+        if metadata.permissions().mode() & 0o4000 != 0 {
+            return wrapper;
+        }
+    }
+    PathBuf::from("pkexec")
+}
+
 pub fn run_pkexec(helper: &std::path::Path, plan: &std::path::Path, mode: &str) -> (bool, String) {
-    let output = std::process::Command::new("pkexec")
+    let output = std::process::Command::new(pkexec_path())
         .arg(helper)
         .arg("--plan")
         .arg(plan)

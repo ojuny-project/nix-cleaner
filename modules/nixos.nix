@@ -38,5 +38,6 @@ in {
   config = lib.mkIf cfg.enable {
     environment.systemPackages = [cfg.package polkitAction];
     security.polkit.enable = true;
+    security.polkit.enablePkexecWrapper = lib.mkDefault true;
   };
 }
