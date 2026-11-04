@@ -9,10 +9,16 @@ pub struct Loaded {
     pub graph: Graph,
 }
 
+#[derive(Clone, Copy)]
+pub struct Measured {
+    pub dead_paths: usize,
+    pub dead_bytes: u64,
+}
+
 pub struct State {
     pub loaded: RefCell<Option<Arc<Loaded>>>,
     pub scanning: Cell<bool>,
-    pub last_actual: Cell<Option<u64>>,
+    pub last_actual: Cell<Option<Measured>>,
     pub log: RefCell<String>,
 }
 

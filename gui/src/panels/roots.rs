@@ -1,4 +1,4 @@
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashSet;
 use std::rc::Rc;
 
@@ -10,7 +10,7 @@ use gtk::{gio, glib};
 use crate::clean::{self, PlanLink};
 use crate::format;
 use crate::rows::{self, Cell, Column, ColumnKind, Marker, Row};
-use crate::state::SharedState;
+use crate::state::{Measured, SharedState};
 use crate::ui;
 
 static COLUMNS: [Column; 6] = [
@@ -88,6 +88,8 @@ pub struct RootsPanel {
     detail: gtk::Label,
     calculate: gtk::Button,
     clean: gtk::Button,
+    busy: Cell<bool>,
+    spinner: gtk::Spinner,
     window: gtk::Window,
     state: SharedState,
     rescan: RefCell<Option<Rc<dyn Fn()>>>,
@@ -120,8 +122,13 @@ impl RootsPanel {
         let clear = gtk::Button::with_label("Clear selection");
         clear.set_sensitive(false);
 
+        let spinner = gtk::Spinner::new();
+        spinner.set_visible(false);
+        spinner.set_valign(gtk::Align::Center);
+
         let buttons = gtk::Box::new(gtk::Orientation::Horizontal, 8);
         buttons.set_halign(gtk::Align::End);
+        buttons.append(&spinner);
         buttons.append(&clear);
         buttons.append(&calculate);
         buttons.append(&clean);
@@ -150,6 +157,8 @@ impl RootsPanel {
             detail,
             calculate,
             clean,
+            busy: Cell::new(false),
+            spinner,
             window: window.clone(),
             state,
             rescan: RefCell::new(None),
@@ -201,7 +210,22 @@ impl RootsPanel {
         *self.rescan.borrow_mut() = Some(rescan);
     }
 
+    fn set_busy(&self, busy: bool) {
+        self.busy.set(busy);
+        self.spinner.set_visible(busy);
+        if busy {
+            self.spinner.start();
+        } else {
+            self.spinner.stop();
+        }
+        self.calculate
+            .set_label(if busy { "Calculating…" } else { "Calculate actual" });
+    }
+
     fn toggle(self: &Rc<Self>, id: u32) {
+        if self.busy.get() {
+            return;
+        }
         {
             let mut selected = self.selected.borrow_mut();
             if !selected.remove(&id) {
@@ -306,19 +330,28 @@ impl RootsPanel {
 
         let savings = selection_savings(&loaded.graph, &loaded.index.analysis, &selected);
         self.summary.set_label(&format!(
-            "{} roots selected · freeable space {}",
+            "{} roots selected · freeable estimate {}",
             selected.len(),
             format::bytes(savings)
         ));
 
+        if self.busy.get() {
+            self.detail
+                .set_label("measuring: staging roots out, counting dead paths, restoring links");
+            self.calculate.set_sensitive(false);
+            self.clean.set_sensitive(false);
+            return;
+        }
+
         match self.state.last_actual.get() {
             Some(measured) => self.detail.set_label(&format!(
-                "measured dead bytes with those roots staged out: {}",
-                format::bytes(measured)
+                "measured result: {} dead paths, {} freeable, links restored",
+                measured.dead_paths,
+                format::bytes(measured.dead_bytes)
             )),
-            None => self
-                .detail
-                .set_label("Calculate actual stages the roots out, measures, and restores them"),
+            None => self.detail.set_label(
+                "Calculate actual stages the roots out, measures dead paths, and restores the links",
+            ),
         }
 
         self.calculate.set_sensitive(true);
@@ -347,37 +380,66 @@ impl RootsPanel {
     }
 
     fn calculate_actual(self: &Rc<Self>) {
+        if self.busy.get() {
+            return;
+        }
         let (links, _, _) = self.plan_links();
         if links.is_empty() {
             return;
         }
+        self.state.last_actual.set(None);
+        self.set_busy(true);
+        self.update_summary();
+
         let state = self.state.clone();
         let weak = Rc::downgrade(self);
         let window = self.window.clone();
 
-        clean::spawn(links, "dry-run", move |result| match result {
-            Ok(output) if output.ok => {
-                state.last_actual.set(Some(output.dead_bytes));
-                if let Some(panel) = weak.upgrade() {
-                    panel.update_summary();
-                    ui::info(
-                        &window,
-                        "Measured cleanup",
-                        &format!(
-                            "Staging these roots out would make {} paths dead, freeing {}.\n\nThe links were restored.",
-                            output.dead_paths,
-                            format::bytes(output.dead_bytes)
-                        ),
-                    );
+        clean::spawn(links, "dry-run", move |result| {
+            if let Some(panel) = weak.upgrade() {
+                panel.set_busy(false);
+            }
+            match result {
+                Ok(output) if output.ok => {
+                    state.last_actual.set(Some(Measured {
+                        dead_paths: output.dead_paths,
+                        dead_bytes: output.dead_bytes,
+                    }));
+                    if let Some(panel) = weak.upgrade() {
+                        panel.update_summary();
+                        ui::info(
+                            &window,
+                            "Measurement finished",
+                            &format!(
+                                "Staging these roots out makes {} paths dead, freeing {}.\n\nThe links were restored.",
+                                output.dead_paths,
+                                format::bytes(output.dead_bytes)
+                            ),
+                        );
+                    }
+                }
+                Ok(output) => {
+                    let message = output
+                        .error
+                        .unwrap_or_else(|| "the helper refused the plan".to_string());
+                    if let Some(panel) = weak.upgrade() {
+                        panel.update_summary();
+                        panel
+                            .detail
+                            .set_label(&format!("measurement failed: {message}"));
+                    }
+                    ui::info(&window, "Could not measure", &message);
+                }
+                Err(error) => {
+                    if let Some(panel) = weak.upgrade() {
+                        panel.update_summary();
+                        panel
+                            .detail
+                            .set_label(&format!("measurement failed: {error}"));
+                    }
+                    ui::info(&window, "Could not measure", &error);
                 }
             }
-            Ok(output) => {
-                let message = output
-                    .error
-                    .unwrap_or_else(|| "the helper refused the plan".to_string());
-                ui::info(&window, "Could not measure", &message);
-            }
-            Err(error) => ui::info(&window, "Could not measure", &error),
         });
     }
 
