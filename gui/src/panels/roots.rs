@@ -1,4 +1,4 @@
-use std::cell::{Cell, RefCell};
+use std::cell::{Cell as StdCell, RefCell};
 use std::collections::HashSet;
 use std::rc::Rc;
 
@@ -88,7 +88,7 @@ pub struct RootsPanel {
     detail: gtk::Label,
     calculate: gtk::Button,
     clean: gtk::Button,
-    busy: Cell<bool>,
+    busy: StdCell<bool>,
     spinner: gtk::Spinner,
     window: gtk::Window,
     state: SharedState,
@@ -157,7 +157,7 @@ impl RootsPanel {
             detail,
             calculate,
             clean,
-            busy: Cell::new(false),
+            busy: StdCell::new(false),
             spinner,
             window: window.clone(),
             state,
