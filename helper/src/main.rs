@@ -12,7 +12,7 @@ use serde_json::{json, Value};
 const PLAN_VERSION: u32 = 1;
 const CHILD_PATH: &str =
     "/run/current-system/sw/bin:/nix/var/nix/profiles/default/bin:/run/wrappers/bin";
-const GC_LOCK: &str = "/nix/var/nix/gc.lock";
+const HELPER_LOCK: &str = "/run/nix-cleaner-helper.lock";
 const AUTO_ROOTS: &str = "/nix/var/nix/gcroots/auto";
 const STAGING_SUFFIX: &str = ".nix-cleaner-staging";
 const ALLOWED_PREFIXES: [&str; 2] = ["/nix/var/nix/profiles/", "/nix/var/nix/gcroots/per-user/"];
@@ -268,12 +268,20 @@ fn verify_discovered(plan: &Plan, messages: &mut Vec<String>) -> Result<()> {
     Ok(())
 }
 
-fn acquire_gc_lock() -> Result<File> {
-    let file = File::open(GC_LOCK).with_context(|| format!("opening {GC_LOCK}"))?;
-    let result = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) };
+fn acquire_helper_lock() -> Result<File> {
+    let file = File::options()
+        .read(true)
+        .write(true)
+        .create(true)
+        .open(HELPER_LOCK)
+        .with_context(|| format!("opening {HELPER_LOCK}"))?;
+    let result = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
     if result != 0 {
         let error = std::io::Error::last_os_error();
-        return Err(error).with_context(|| format!("locking {GC_LOCK}"));
+        if error.kind() == std::io::ErrorKind::WouldBlock {
+            bail!("another nix-cleaner operation is already running");
+        }
+        return Err(error).with_context(|| format!("locking {HELPER_LOCK}"));
     }
     Ok(file)
 }
@@ -563,10 +571,9 @@ enum Outcome {
 
 fn run(messages: &mut Vec<String>) -> Result<Value> {
     let args = parse_args()?;
+    let _lock = acquire_helper_lock()?;
     let plan = Plan::read(&args.plan)?;
     validate_plan(&plan)?;
-
-    let _lock = acquire_gc_lock()?;
     verify_discovered(&plan, messages)?;
 
     let auto_roots = snapshot_auto_roots(&plan.links)?;

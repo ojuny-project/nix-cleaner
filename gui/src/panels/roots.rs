@@ -218,8 +218,6 @@ impl RootsPanel {
         } else {
             self.spinner.stop();
         }
-        self.calculate
-            .set_label(if busy { "Calculating…" } else { "Calculate actual" });
     }
 
     fn toggle(self: &Rc<Self>, id: u32) {
@@ -389,6 +387,7 @@ impl RootsPanel {
         }
         self.state.last_actual.set(None);
         self.set_busy(true);
+        self.calculate.set_label("Calculating…");
         self.update_summary();
 
         let state = self.state.clone();
@@ -398,6 +397,7 @@ impl RootsPanel {
         clean::spawn(links, "dry-run", move |result| {
             if let Some(panel) = weak.upgrade() {
                 panel.set_busy(false);
+                panel.calculate.set_label("Calculate actual");
             }
             match result {
                 Ok(output) if output.ok => {
@@ -444,6 +444,9 @@ impl RootsPanel {
     }
 
     fn confirm_clean(self: &Rc<Self>) {
+        if self.busy.get() {
+            return;
+        }
         let (links, labels, estimate) = self.plan_links();
         if links.is_empty() {
             return;
