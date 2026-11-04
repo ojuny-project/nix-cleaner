@@ -87,10 +87,19 @@ impl ProgressView {
         view
     }
 
-    pub fn reset(&self, text: &str) {
+    pub fn begin(&self, text: &str) {
         self.buffer.set_text("");
         self.label.set_label(text);
         self.bar.set_fraction(0.0);
+        self.bar.pulse();
+        self.panel.set_reveal_child(true);
+        self.button.set_label("Hide progress");
+    }
+
+    pub fn begin_scan(&self, text: &str) {
+        self.label.set_label(text);
+        self.bar.set_fraction(0.0);
+        self.append(text);
     }
 
     pub fn set_stage(&self, stage: &str) {

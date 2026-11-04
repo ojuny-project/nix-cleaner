@@ -52,10 +52,10 @@ impl App {
             .build();
 
         let gtk_window = window.clone().upcast::<gtk::Window>();
-        let roots = RootsPanel::new(&gtk_window, state.clone());
+        let progress = ProgressView::new();
+        let roots = RootsPanel::new(&gtk_window, state.clone(), progress.clone());
         let store = StorePanel::new(state.clone());
         let tree = TreePanel::new(state.clone());
-        let progress = ProgressView::new();
 
         let holder: Rc<RefCell<Option<std::rc::Weak<App>>>> = Rc::new(RefCell::new(None));
         let trigger: Rc<dyn Fn()> = {
@@ -176,7 +176,7 @@ impl App {
         }
         self.state.scanning.set(true);
         self.scan_button.set_sensitive(false);
-        self.progress.reset("starting scan");
+        self.progress.begin_scan("starting scan");
         self.state.log.borrow_mut().clear();
 
         let (sender, receiver) = async_channel::unbounded();

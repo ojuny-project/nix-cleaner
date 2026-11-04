@@ -254,6 +254,7 @@ fn scan_auto_roots(discovery: &mut Discovery, dir: &Path, home: &Path) {
     let Ok(entries) = fs::read_dir(dir) else {
         return;
     };
+    let cache_dir = home.join(".cache/nix");
     for entry in entries.flatten() {
         let Ok(destination) = fs::read_link(entry.path()) else {
             continue;
@@ -272,7 +273,12 @@ fn scan_auto_roots(discovery: &mut Discovery, dir: &Path, home: &Path) {
             .file_name()
             .map(|name| name.to_string_lossy().to_string())
             .unwrap_or_default();
-        let (kind, label) = if file_name == "result" || file_name.starts_with("result-") {
+        let (kind, label) = if destination.parent() == Some(cache_dir.as_path()) {
+            (
+                RootKind::NixCache,
+                format!("Nix cache · {}", shorten(home, &destination)),
+            )
+        } else if file_name == "result" || file_name.starts_with("result-") {
             let parent = destination.parent().unwrap_or(Path::new("/"));
             (
                 RootKind::ResultLink,
@@ -309,6 +315,7 @@ pub fn apply_protection(roots: &mut [Root]) {
             RootKind::HomeManagerCurrent | RootKind::Profile => {
                 root.protection = Protection::CurrentProfile
             }
+            RootKind::NixCache => root.protection = Protection::NixCache,
             _ => {}
         }
         if root.link.starts_with("/nix/var/nix/gcroots/") {

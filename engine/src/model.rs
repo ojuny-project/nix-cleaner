@@ -22,6 +22,7 @@ pub enum RootKind {
     ResultLink,
     Gcroot,
     Other,
+    NixCache,
 }
 
 impl RootKind {
@@ -36,6 +37,7 @@ impl RootKind {
             RootKind::ResultLink => "result link",
             RootKind::Gcroot => "gc root",
             RootKind::Other => "other",
+            RootKind::NixCache => "nix cache",
         }
     }
 
@@ -46,10 +48,11 @@ impl RootKind {
             RootKind::SystemGeneration => 2,
             RootKind::HomeManagerCurrent => 3,
             RootKind::HomeManagerGeneration => 4,
-            RootKind::Profile => 5,
-            RootKind::ResultLink => 6,
-            RootKind::Gcroot => 7,
-            RootKind::Other => 8,
+            RootKind::NixCache => 5,
+            RootKind::Profile => 6,
+            RootKind::ResultLink => 7,
+            RootKind::Gcroot => 8,
+            RootKind::Other => 9,
         }
     }
 }
@@ -63,6 +66,7 @@ pub enum Protection {
     NewestGeneration,
     CurrentProfile,
     SystemOwned,
+    NixCache,
 }
 
 impl Protection {
@@ -79,6 +83,7 @@ impl Protection {
             Protection::NewestGeneration => "one of the newest three generations",
             Protection::CurrentProfile => "an active profile",
             Protection::SystemOwned => "a system managed root",
+            Protection::NixCache => "a Nix cache root",
         }
     }
 }

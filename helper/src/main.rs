@@ -58,6 +58,7 @@ fn execute() -> std::result::Result<Value, Failure> {
 enum Mode {
     DryRun,
     Clean,
+    Collect,
 }
 
 impl Mode {
@@ -65,6 +66,7 @@ impl Mode {
         match value {
             "dry-run" => Ok(Mode::DryRun),
             "clean" => Ok(Mode::Clean),
+            "collect" => Ok(Mode::Collect),
             other => bail!("unknown mode: {other}"),
         }
     }
@@ -73,6 +75,7 @@ impl Mode {
         match self {
             Mode::DryRun => "dry-run",
             Mode::Clean => "clean",
+            Mode::Collect => "collect",
         }
     }
 }
@@ -135,9 +138,6 @@ impl Plan {
 fn validate_plan(plan: &Plan) -> Result<()> {
     if plan.version != PLAN_VERSION {
         bail!("unsupported plan version: {}", plan.version);
-    }
-    if plan.links.is_empty() {
-        bail!("the plan contains no links");
     }
     validate_home(&plan.user_home)?;
     validate_unique(&plan.links)?;
@@ -504,31 +504,77 @@ fn list_dead_paths() -> Result<Vec<String>> {
 fn dead_bytes(paths: &[String], messages: &mut Vec<String>) -> Result<u64> {
     let mut total = 0u64;
     for batch in paths.chunks(SIZE_BATCH) {
-        let output = nix_command("nix-store")?
-            .arg("--query")
-            .arg("--size")
-            .args(batch)
-            .output()
-            .context("running nix-store --query --size")?;
-        if !output.status.success() {
-            bail!("nix-store --query --size failed: {}", describe(&output));
-        }
+        let mut remaining: Vec<&String> = batch.iter().collect();
+        loop {
+            if remaining.is_empty() {
+                break;
+            }
+            let output = nix_command("nix-store")?
+                .arg("--query")
+                .arg("--size")
+                .args(remaining.iter().map(|path| path.as_str()))
+                .output()
+                .context("running nix-store --query --size")?;
+            if output.status.success() {
+                total = total.saturating_add(parse_sizes(&output, messages));
+                break;
+            }
 
-        for line in String::from_utf8_lossy(&output.stdout).lines() {
-            let line = line.trim();
-            if line.is_empty() {
-                continue;
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            let Some(invalid) = invalid_store_path(&stderr) else {
+                bail!("nix-store --query --size failed: {}", describe(&output));
+            };
+            let before = remaining.len();
+            remaining.retain(|path| path.as_str() != invalid);
+            if remaining.len() == before {
+                bail!("nix-store --query --size failed: {}", describe(&output));
             }
-            match line.parse::<u64>() {
-                Ok(size) => total = total.saturating_add(size),
-                Err(_) => messages.push(format!("ignored unexpected size output: {line}")),
-            }
+            messages.push(format!("skipped invalid store path: {invalid}"));
         }
     }
     Ok(total)
 }
 
-fn clean(staged: &[Staged], messages: &mut Vec<String>) -> Result<()> {
+fn parse_sizes(output: &Output, messages: &mut Vec<String>) -> u64 {
+    let mut total = 0u64;
+    for line in String::from_utf8_lossy(&output.stdout).lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        match line.parse::<u64>() {
+            Ok(size) => total = total.saturating_add(size),
+            Err(_) => messages.push(format!("ignored unexpected size output: {line}")),
+        }
+    }
+    total
+}
+
+fn invalid_store_path(stderr: &str) -> Option<&str> {
+    stderr.lines().find_map(|line| {
+        line.trim()
+            .strip_prefix("error: path ")
+            .and_then(|rest| rest.split_once(" is not valid"))
+            .map(|(path, _)| path.trim().trim_matches('\''))
+    })
+}
+
+fn collect(messages: &mut Vec<String>) -> Result<(usize, u64)> {
+    let paths = list_dead_paths()?;
+    let bytes = dead_bytes(&paths, messages)?;
+
+    let output = nix_command("nix-collect-garbage")?
+        .output()
+        .context("running nix-collect-garbage")?;
+    record_output(&output, messages);
+    if !output.status.success() {
+        bail!("nix-collect-garbage failed: {}", describe(&output));
+    }
+
+    Ok((paths.len(), bytes))
+}
+
+fn clean(staged: &[Staged], messages: &mut Vec<String>) -> Result<(usize, u64)> {
     for entry in staged {
         fs::symlink_metadata(&entry.staging)
             .with_context(|| format!("staged root is missing: {}", entry.staging))?;
@@ -537,12 +583,7 @@ fn clean(staged: &[Staged], messages: &mut Vec<String>) -> Result<()> {
         }
     }
 
-    let output = nix_command("nix-collect-garbage")?
-        .output()
-        .context("running nix-collect-garbage")?;
-    if !output.status.success() {
-        bail!("nix-collect-garbage failed: {}", describe(&output));
-    }
+    let (dead_paths, dead_bytes) = collect(messages)?;
 
     let mut leftovers = Vec::new();
     for entry in staged {
@@ -561,12 +602,12 @@ fn clean(staged: &[Staged], messages: &mut Vec<String>) -> Result<()> {
             leftovers.join("; ")
         ));
     }
-    Ok(())
+    Ok((dead_paths, dead_bytes))
 }
 
 enum Outcome {
     DryRun { dead_paths: usize, dead_bytes: u64 },
-    Clean,
+    Clean { dead_paths: usize, dead_bytes: u64 },
 }
 
 fn run(messages: &mut Vec<String>) -> Result<Value> {
@@ -574,6 +615,9 @@ fn run(messages: &mut Vec<String>) -> Result<Value> {
     let _lock = acquire_helper_lock()?;
     let plan = Plan::read(&args.plan)?;
     validate_plan(&plan)?;
+    if plan.links.is_empty() && args.mode != Mode::Collect {
+        bail!("the plan contains no links");
+    }
     verify_discovered(&plan, messages)?;
 
     let auto_roots = snapshot_auto_roots(&plan.links)?;
@@ -585,7 +629,14 @@ fn run(messages: &mut Vec<String>) -> Result<Value> {
                 dead_bytes,
             }
         }),
-        Mode::Clean => clean(&staged, messages).map(|()| Outcome::Clean),
+        Mode::Clean => clean(&staged, messages).map(|(dead_paths, dead_bytes)| Outcome::Clean {
+            dead_paths,
+            dead_bytes,
+        }),
+        Mode::Collect => collect(messages).map(|(dead_paths, dead_bytes)| Outcome::Clean {
+            dead_paths,
+            dead_bytes,
+        }),
     };
 
     let outcome = match outcome {
@@ -614,11 +665,14 @@ fn run(messages: &mut Vec<String>) -> Result<Value> {
             "restored": true,
             "messages": messages.clone(),
         }),
-        Outcome::Clean => json!({
+        Outcome::Clean {
+            dead_paths,
+            dead_bytes,
+        } => json!({
             "ok": true,
             "mode": args.mode.name(),
-            "dead_paths": 0,
-            "dead_bytes": 0,
+            "dead_paths": dead_paths,
+            "dead_bytes": dead_bytes,
             "cleaned": true,
             "restored": false,
             "messages": messages.clone(),
@@ -651,6 +705,21 @@ fn describe(output: &Output) -> String {
         format!("exited with {}", output.status)
     } else {
         trimmed.to_string()
+    }
+}
+
+fn record_output(output: &Output, messages: &mut Vec<String>) {
+    for line in String::from_utf8_lossy(&output.stdout).lines() {
+        let line = line.trim();
+        if !line.is_empty() {
+            messages.push(line.to_string());
+        }
+    }
+    for line in String::from_utf8_lossy(&output.stderr).lines() {
+        let line = line.trim();
+        if !line.is_empty() {
+            messages.push(line.to_string());
+        }
     }
 }
 
@@ -707,6 +776,12 @@ mod tests {
         ];
         let error = validate_unique(&links).unwrap_err();
         assert!(error.to_string().contains("duplicate"));
+    }
+
+    #[test]
+    fn extracts_invalid_store_path() {
+        let stderr = "warning: unreadable root: /home/den/x\nerror: path /nix/store/abc is not valid";
+        assert_eq!(invalid_store_path(stderr), Some("/nix/store/abc"));
     }
 
     #[test]

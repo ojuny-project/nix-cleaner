@@ -58,6 +58,20 @@ fn booted_generation_is_protected_even_when_old() {
 }
 
 #[test]
+fn nix_cache_roots_are_protected() {
+    let mut roots = vec![Root {
+        link: "/home/den/.cache/nix/flake-registry.json".to_string(),
+        target: "/nix/store/x-flake-registry.json".to_string(),
+        kind: RootKind::NixCache,
+        label: "Nix cache · ~/.cache/nix/flake-registry.json".to_string(),
+        generation: None,
+        protection: Protection::None,
+    }];
+    apply_protection(&mut roots);
+    assert_eq!(roots[0].protection, Protection::NixCache);
+}
+
+#[test]
 fn system_owned_gcroots_cannot_be_selected() {
     let mut roots = vec![Root {
         link: "/nix/var/nix/gcroots/auto/abc".to_string(),

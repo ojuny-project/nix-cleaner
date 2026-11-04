@@ -6,7 +6,7 @@ use anyhow::{Context, Result};
 
 use crate::model::Index;
 
-pub const VERSION: u32 = 2;
+pub const VERSION: u32 = 3;
 
 pub fn cache_path() -> PathBuf {
     cache_dir().join("index.postcard")

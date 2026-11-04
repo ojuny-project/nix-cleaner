@@ -9,6 +9,7 @@ use gtk::{gio, glib};
 
 use crate::clean::{self, PlanLink};
 use crate::format;
+use crate::progress::ProgressView;
 use crate::rows::{self, Cell, Column, ColumnKind, Marker, Row};
 use crate::state::{Measured, SharedState};
 use crate::ui;
@@ -62,6 +63,7 @@ fn kind_icon(kind: RootKind) -> (&'static str, &'static str) {
         RootKind::Profile => ("avatar-default-symbolic", "PRF"),
         RootKind::ResultLink => ("folder-symbolic", "RES"),
         RootKind::Gcroot => ("link-symbolic", "GC"),
+        RootKind::NixCache => ("folder-download-symbolic", "CACHE"),
         RootKind::Other => ("dialog-question-symbolic", "?"),
     }
 }
@@ -92,11 +94,16 @@ pub struct RootsPanel {
     spinner: gtk::Spinner,
     window: gtk::Window,
     state: SharedState,
+    progress: Rc<ProgressView>,
     rescan: RefCell<Option<Rc<dyn Fn()>>>,
 }
 
 impl RootsPanel {
-    pub fn new(window: &gtk::Window, state: SharedState) -> Rc<Self> {
+    pub fn new(
+        window: &gtk::Window,
+        state: SharedState,
+        progress: Rc<ProgressView>,
+    ) -> Rc<Self> {
         let widget = gtk::Box::new(gtk::Orientation::Vertical, 0);
         widget.set_hexpand(true);
         widget.set_vexpand(true);
@@ -115,8 +122,8 @@ impl RootsPanel {
 
         let calculate = gtk::Button::with_label("Calculate actual");
         calculate.set_sensitive(false);
-        let clean = gtk::Button::with_label("Clean selected");
-        clean.set_sensitive(false);
+        let clean = gtk::Button::with_label("Collect garbage");
+        clean.set_sensitive(true);
         clean.add_css_class("destructive-action");
 
         let clear = gtk::Button::with_label("Clear selection");
@@ -161,6 +168,7 @@ impl RootsPanel {
             spinner,
             window: window.clone(),
             state,
+            progress,
             rescan: RefCell::new(None),
         });
 
@@ -294,16 +302,19 @@ impl RootsPanel {
             self.summary.set_label("No scan yet");
             self.detail.set_label("");
             self.calculate.set_sensitive(false);
-            self.clean.set_sensitive(false);
+            self.clean.set_label("Collect garbage");
+            self.clean.set_sensitive(!self.busy.get());
             return;
         };
 
         if selected.is_empty() {
-            self.summary
-                .set_label("Tick gc roots to see how much space cleaning them would free");
+            self.summary.set_label(
+                "Tick gc roots to clean specific roots, or collect garbage from the whole store",
+            );
             self.detail.set_label("");
             self.calculate.set_sensitive(false);
-            self.clean.set_sensitive(false);
+            self.clean.set_label("Collect garbage");
+            self.clean.set_sensitive(!self.busy.get());
             return;
         }
 
@@ -322,6 +333,7 @@ impl RootsPanel {
             self.detail
                 .set_label("Untick the protected roots to continue");
             self.calculate.set_sensitive(false);
+            self.clean.set_label("Clean selected");
             self.clean.set_sensitive(false);
             return;
         }
@@ -332,6 +344,7 @@ impl RootsPanel {
             selected.len(),
             format::bytes(savings)
         ));
+        self.clean.set_label("Clean selected");
 
         if self.busy.get() {
             self.detail
@@ -449,6 +462,7 @@ impl RootsPanel {
         }
         let (links, labels, estimate) = self.plan_links();
         if links.is_empty() {
+            self.confirm_collect();
             return;
         }
 
@@ -477,32 +491,149 @@ impl RootsPanel {
                 let weak = weak.clone();
                 let window = window.clone();
                 let trigger = trigger.clone();
-                clean::spawn(links, "clean", move |result| match result {
-                    Ok(output) if output.ok => {
-                        if let Some(panel) = weak.upgrade() {
-                            panel.selected.borrow_mut().clear();
-                            panel.state.last_actual.set(None);
+                if let Some(panel) = weak.upgrade() {
+                    panel.set_busy(true);
+                    panel.update_summary();
+                    panel
+                        .detail
+                        .set_label("cleaning: unlinking roots and running nix-collect-garbage");
+                    panel.progress.begin("cleaning");
+                    panel.progress.append("starting privileged helper");
+                }
+                clean::spawn(links, "clean", move |result| {
+                    if let Some(panel) = weak.upgrade() {
+                        panel.set_busy(false);
+                    }
+                    match result {
+                        Ok(output) if output.ok => {
+                            if let Some(panel) = weak.upgrade() {
+                                panel.selected.borrow_mut().clear();
+                                panel.state.last_actual.set(None);
+                                panel.update_summary();
+                                for line in &output.messages {
+                                    panel.progress.append(line);
+                                }
+                                panel.progress.finish(&format!(
+                                    "cleaning finished · {} paths · {}",
+                                    output.dead_paths,
+                                    format::bytes(output.dead_bytes)
+                                ));
+                            }
+                            ui::info(
+                                &window,
+                                "Cleaning finished",
+                                &format!(
+                                    "{} paths removed, {} freed.\n\nRefreshing the index.",
+                                    output.dead_paths,
+                                    format::bytes(output.dead_bytes)
+                                ),
+                            );
+                            if let Some(trigger) = trigger.as_ref() {
+                                trigger();
+                            }
                         }
-                        ui::info(
-                            &window,
-                            "Cleaning finished",
-                            &format!(
-                                "{} paths removed, {} freed.\n\nRefreshing the index.",
-                                output.dead_paths,
-                                format::bytes(output.dead_bytes)
-                            ),
-                        );
-                        if let Some(trigger) = trigger.as_ref() {
-                            trigger();
+                        Ok(output) => {
+                            let message = output
+                                .error
+                                .unwrap_or_else(|| "the helper refused the plan".to_string());
+                            if let Some(panel) = weak.upgrade() {
+                                panel.update_summary();
+                                for line in &output.messages {
+                                    panel.progress.append(line);
+                                }
+                                panel.progress.fail(&format!("cleaning failed: {message}"));
+                            }
+                            ui::info(&window, "Cleaning failed", &message);
+                        }
+                        Err(error) => {
+                            if let Some(panel) = weak.upgrade() {
+                                panel.update_summary();
+                                panel.progress.fail(&format!("cleaning failed: {error}"));
+                            }
+                            ui::info(&window, "Cleaning failed", &error);
                         }
                     }
-                    Ok(output) => {
-                        let message = output
-                            .error
-                            .unwrap_or_else(|| "the helper refused the plan".to_string());
-                        ui::info(&window, "Cleaning failed", &message);
+                });
+            },
+        );
+    }
+
+    fn confirm_collect(self: &Rc<Self>) {
+        let body = "This runs nix-collect-garbage and deletes every dead store path.\n\nNo GC roots are unlinked.";
+        let weak = Rc::downgrade(self);
+        let window = self.window.clone();
+        let trigger = self.rescan.borrow().clone();
+        let dialog_parent = window.clone();
+
+        ui::confirm(
+            &dialog_parent,
+            "Collect garbage?",
+            body,
+            "Collect garbage",
+            move || {
+                let weak = weak.clone();
+                let window = window.clone();
+                let trigger = trigger.clone();
+                if let Some(panel) = weak.upgrade() {
+                    panel.set_busy(true);
+                    panel.update_summary();
+                    panel
+                        .detail
+                        .set_label("collecting garbage: running nix-collect-garbage");
+                    panel.progress.begin("collecting garbage");
+                    panel.progress.append("starting privileged helper");
+                }
+                clean::spawn(Vec::new(), "collect", move |result| {
+                    if let Some(panel) = weak.upgrade() {
+                        panel.set_busy(false);
                     }
-                    Err(error) => ui::info(&window, "Cleaning failed", &error),
+                    match result {
+                        Ok(output) if output.ok => {
+                            if let Some(panel) = weak.upgrade() {
+                                panel.update_summary();
+                                for line in &output.messages {
+                                    panel.progress.append(line);
+                                }
+                                panel.progress.finish(&format!(
+                                    "collection finished · {} paths · {}",
+                                    output.dead_paths,
+                                    format::bytes(output.dead_bytes)
+                                ));
+                            }
+                            ui::info(
+                                &window,
+                                "Collection finished",
+                                &format!(
+                                    "{} paths removed, {} freed.\n\nRefreshing the index.",
+                                    output.dead_paths,
+                                    format::bytes(output.dead_bytes)
+                                ),
+                            );
+                            if let Some(trigger) = trigger.as_ref() {
+                                trigger();
+                            }
+                        }
+                        Ok(output) => {
+                            let message = output
+                                .error
+                                .unwrap_or_else(|| "the helper refused the plan".to_string());
+                            if let Some(panel) = weak.upgrade() {
+                                panel.update_summary();
+                                for line in &output.messages {
+                                    panel.progress.append(line);
+                                }
+                                panel.progress.fail(&format!("collection failed: {message}"));
+                            }
+                            ui::info(&window, "Collection failed", &message);
+                        }
+                        Err(error) => {
+                            if let Some(panel) = weak.upgrade() {
+                                panel.update_summary();
+                                panel.progress.fail(&format!("collection failed: {error}"));
+                            }
+                            ui::info(&window, "Collection failed", &error);
+                        }
+                    }
                 });
             },
         );

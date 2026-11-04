@@ -67,6 +67,24 @@ other store path. `df` is comparable only when the store has its own filesystem.
 No non-NixOS module is provided. The application does not edit
 `configuration.nix`, and it does not schedule automatic cleaning. Automatic cleaning can be scheduled directly in the nix daemon settings via `nix.conf` or in your `configuration.nix`
 
+## Releases
+
+A `v*` tag, a manual workflow run, or a commit on `main` whose title starts with
+a version such as `v0.1.0` builds `nix-cleaner.bin` and `nix-cleaner-flake.tar.gz`.
+
+The release flake installs the prebuilt bundle without compiling:
+
+```nix
+inputs.nix-cleaner.url =
+  "tarball+https://github.com/ojuny-project/nix-cleaner/releases/download/vX.Y.Z/nix-cleaner-flake.tar.gz";
+```
+
+Then add `inputs.nix-cleaner.packages.${pkgs.system}.nix-cleaner` to `environment.systemPackages`.
+
+The generated flake exposes packages only. Use the source flake when you need
+the NixOS module.
+
+
 ## Documentation
 - [OPTIONS.md](OPTIONS.md) - generated options reference.
 
