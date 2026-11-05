@@ -1,0 +1,18 @@
+{
+  "repo": "ojuny-project/nix-cleaner",
+  "system": "x86_64-linux",
+  "latest": "v0.1.0-hotfix-1",
+  "releases": {
+    "v0.1.0-hotfix-1": {
+      "tag": "v0.1.0-hotfix-1",
+      "version": "0.1.0-hotfix-1",
+      "packages": {
+        "nix-cleaner": {
+          "file": "nix-cleaner.bin",
+          "url": "https://github.com/ojuny-project/nix-cleaner/releases/download/v0.1.0-hotfix-1/nix-cleaner.bin",
+          "hash": "sha256-0SJfWPAOrimZYhhgVe/agx0FWWd9e2y9GP0REnN38t4="
+        }
+      }
+    }
+  }
+}
