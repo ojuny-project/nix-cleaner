@@ -6,50 +6,63 @@
     flake-utils.url = "github:numtide/flake-utils";
   };
 
-  outputs = {
-    self,
-    nixpkgs,
-    flake-utils,
-    ...
-  }: let
-    binaryInfo =
-      if builtins.pathExists ./binary-url.json
-      then builtins.fromJSON (builtins.readFile ./binary-url.json)
-      else null;
+  outputs =
+    {
+      self,
+      nixpkgs,
+      flake-utils,
+      ...
+    }:
+    let
+      binaryInfo =
+        if builtins.pathExists ./binary-url.json then
+          builtins.fromJSON (builtins.readFile ./binary-url.json)
+        else
+          null;
 
-    desktopPostInstall =
-      if builtins.pathExists ./nix-cleaner.desktop
-      then ''
-        install -Dm644 ${./nix-cleaner.desktop} "$out/share/applications/nix-cleaner.desktop"
-      ''
-      else "";
+      desktopPostInstall =
+        if builtins.pathExists ./nix-cleaner.desktop then
+          ''
+            install -Dm644 ${./nix-cleaner.desktop} "$out/share/applications/nix-cleaner.desktop"
+          ''
+        else
+          "";
 
-    mkBinary = {
-      system,
-      tag ? (if binaryInfo == null then throw "nix-cleaner: binary-url.json is missing" else binaryInfo.latest),
-      package ? "nix-cleaner",
-    }: let
-      release =
-        if binaryInfo == null
-        then throw "nix-cleaner: binary-url.json is missing"
-        else binaryInfo.releases.${tag} or (throw "nix-cleaner: release '${tag}' is not recorded in binary-url.json");
-      packageInfo = release.packages.${package} or (throw "nix-cleaner: package '${package}' is not recorded in release '${tag}'");
-      pkgs = import nixpkgs {inherit system;};
-    in
-      pkgs.callPackage ./nix/binary.nix {
-        name = package;
-        inherit (packageInfo) file;
-        info = {
-          inherit (binaryInfo) repo system;
-          inherit (release) tag version;
-          inherit (packageInfo) url hash;
+      mkBinary =
+        {
+          system,
+          tag ? (
+            if binaryInfo == null then throw "nix-cleaner: binary-url.json is missing" else binaryInfo.latest
+          ),
+          package ? "nix-cleaner",
+        }:
+        let
+          release =
+            if binaryInfo == null then
+              throw "nix-cleaner: binary-url.json is missing"
+            else
+              binaryInfo.releases.${tag}
+                or (throw "nix-cleaner: release '${tag}' is not recorded in binary-url.json");
+          packageInfo =
+            release.packages.${package}
+              or (throw "nix-cleaner: package '${package}' is not recorded in release '${tag}'");
+          pkgs = import nixpkgs { inherit system; };
+        in
+        pkgs.callPackage ./nix/binary.nix {
+          name = package;
+          inherit (packageInfo) file;
+          info = {
+            inherit (binaryInfo) repo system;
+            inherit (release) tag version;
+            inherit (packageInfo) url hash;
+          };
+          postInstall = desktopPostInstall;
         };
-        postInstall = desktopPostInstall;
-      };
-  in
+    in
     flake-utils.lib.eachDefaultSystem (
-      system: let
-        pkgs = import nixpkgs {inherit system;};
+      system:
+      let
+        pkgs = import nixpkgs { inherit system; };
         inherit (pkgs) lib;
 
         nativeBuildInputs = with pkgs; [
@@ -66,10 +79,13 @@
           gsettings-desktop-schemas
         ];
 
-        runtimePath = lib.makeBinPath (with pkgs; [
-          nix
-          coreutils
-        ]);
+        runtimePath = lib.makeBinPath (
+          with pkgs;
+          [
+            nix
+            coreutils
+          ]
+        );
 
         nix-cleaner = pkgs.rustPlatform.buildRustPackage {
           pname = "nix-cleaner";
@@ -77,7 +93,7 @@
           src = lib.cleanSource ./.;
           cargoLock.lockFile = ./Cargo.lock;
 
-          nativeBuildInputs = nativeBuildInputs ++ [pkgs.makeWrapper];
+          nativeBuildInputs = nativeBuildInputs ++ [ pkgs.makeWrapper ];
           inherit buildInputs;
 
           postInstall = ''
@@ -97,12 +113,14 @@
             platforms = platforms.linux;
           };
         };
-      in {
+      in
+      {
         packages = {
           inherit nix-cleaner;
           default = nix-cleaner;
-        } // lib.optionalAttrs (binaryInfo != null && binaryInfo.system == system) {
-          nix-cleaner-binary = mkBinary {inherit system;};
+        }
+        // lib.optionalAttrs (binaryInfo != null && binaryInfo.system == system) {
+          nix-cleaner-binary = mkBinary { inherit system; };
         };
 
         apps.default = {
