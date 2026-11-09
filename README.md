@@ -97,3 +97,4 @@ pass `cargo test` and `nix flake check` from the devshell.
 ## License
 
 GPL-3.0-or-later. See [LICENSE](LICENSE). 
+
