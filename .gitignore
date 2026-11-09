@@ -11,3 +11,4 @@ result-*
 # Rust build output and the scan index cache
 target/
 .cache/
+changes.log
