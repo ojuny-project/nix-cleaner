@@ -81,9 +81,23 @@ fn kind_cell(root: &Root) -> Cell {
     }
 }
 
+fn replace_rows_preserving_view(
+    scroll: &gtk::ScrolledWindow,
+    store: &gio::ListStore,
+    model_rows: Vec<Row>,
+) {
+    let adjustment = scroll.vadjustment();
+    let offset = adjustment.value();
+    rows::replace_rows(store, model_rows);
+    glib::idle_add_local_once(move || {
+        adjustment.set_value(offset);
+    });
+}
+
 pub struct RootsPanel {
     pub widget: gtk::Box,
     list: gtk::ListView,
+    scroll: gtk::ScrolledWindow,
     store: gio::ListStore,
     selected: RefCell<HashSet<u32>>,
     summary: gtk::Label,
@@ -151,13 +165,15 @@ impl RootsPanel {
 
         widget.append(&rows::header_row(&COLUMNS));
         widget.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
-        widget.append(&rows::scrolled(&list));
+        let scroll = rows::scrolled(&list);
+        widget.append(&scroll);
         widget.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
         widget.append(&footer);
 
         let panel = Rc::new(RootsPanel {
             widget,
             list,
+            scroll,
             store,
             selected: RefCell::new(HashSet::new()),
             summary,
@@ -238,7 +254,6 @@ impl RootsPanel {
                 selected.insert(id);
             }
         }
-        self.state.last_actual.set(None);
         self.rebuild();
     }
 
@@ -283,7 +298,7 @@ impl RootsPanel {
             });
         }
 
-        rows::replace_rows(&self.store, model_rows);
+        replace_rows_preserving_view(&self.scroll, &self.store, model_rows);
         drop(selected);
         self.update_summary();
     }
@@ -637,5 +652,72 @@ impl RootsPanel {
                 });
             },
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sample_rows(count: u32) -> Vec<Row> {
+        (0..count)
+            .map(|id| Row {
+                id,
+                depth: 0,
+                cells: COLUMNS
+                    .iter()
+                    .map(|column| match column.kind {
+                        ColumnKind::Checkbox => Cell::Checkbox(false),
+                        ColumnKind::Icon => Cell::Icon {
+                            name: "folder-symbolic",
+                            fallback: "RES",
+                            tooltip: String::new(),
+                        },
+                        ColumnKind::Text => Cell::Text(format!("root {id}")),
+                    })
+                    .collect(),
+                marker: Marker::None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn replacing_rows_keeps_the_scroll_offset_and_visible_range() {
+        if gtk::init().is_err() {
+            eprintln!("skipping scroll check: no display");
+            return;
+        }
+        let (list, store) = rows::list_view(&COLUMNS);
+        rows::replace_rows(&store, sample_rows(200));
+        let scroll = gtk::ScrolledWindow::builder().child(&list).vexpand(true).build();
+        let window = gtk::Window::new();
+        window.set_default_size(800, 400);
+        window.set_child(Some(&scroll));
+        window.present();
+
+        let context = glib::MainContext::default();
+        while context.iteration(false) {}
+
+        let adjustment = scroll.vadjustment();
+        adjustment.set_value(adjustment.upper() / 2.0);
+        while context.iteration(false) {}
+        let offset = adjustment.value();
+        let page = adjustment.page_size();
+        assert!(offset > 0.0, "the view did not scroll away from the top");
+
+        replace_rows_preserving_view(&scroll, &store, sample_rows(200));
+        while context.iteration(false) {}
+
+        assert!(
+            (adjustment.value() - offset).abs() < 1.0,
+            "the scroll offset moved from {offset} to {}",
+            adjustment.value()
+        );
+        assert!(
+            (adjustment.page_size() - page).abs() < 1.0,
+            "the visible range changed from {page} to {}",
+            adjustment.page_size()
+        );
+        window.close();
     }
 }

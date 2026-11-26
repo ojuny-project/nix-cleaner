@@ -15,7 +15,11 @@ const CHILD_PATH: &str =
 const HELPER_LOCK: &str = "/run/nix-cleaner-helper.lock";
 const AUTO_ROOTS: &str = "/nix/var/nix/gcroots/auto";
 const STAGING_SUFFIX: &str = ".nix-cleaner-staging";
-const ALLOWED_PREFIXES: [&str; 2] = ["/nix/var/nix/profiles/", "/nix/var/nix/gcroots/per-user/"];
+const ALLOWED_PREFIXES: [&str; 3] = [
+    "/nix/var/nix/profiles/",
+    "/nix/var/nix/gcroots/per-user/",
+    "/tmp/",
+];
 const SIZE_BATCH: usize = 500;
 
 fn main() -> std::process::ExitCode {
@@ -748,8 +752,10 @@ mod tests {
             HOME
         ));
         assert!(is_allowed_location("/home/den/repos/foo/result", HOME));
+        assert!(is_allowed_location("/tmp/nix-build-x/result", HOME));
         assert!(!is_allowed_location("/nix/var/nix/gcroots/auto/abc", HOME));
         assert!(!is_allowed_location("/home/other/result", HOME));
+        assert!(!is_allowed_location("/var/tmp/nix-build-x/result", HOME));
     }
 
     #[test]

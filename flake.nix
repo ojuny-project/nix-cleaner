@@ -142,8 +142,27 @@
           }/bin/ci";
         };
 
+        checks.tests = nix-cleaner.overrideAttrs (_: {
+          doCheck = true;
+        });
+
+        checks.gui = nix-cleaner.overrideAttrs (old: {
+          doCheck = true;
+          nativeBuildInputs = old.nativeBuildInputs ++ [ pkgs.xvfb-run ];
+          preCheck = (old.preCheck or "") + ''
+            export XDG_RUNTIME_DIR="$(mktemp -d)"
+          '';
+          checkPhase = ''
+            runHook preCheck
+            xvfb-run -a cargo test --release --locked -- --include-ignored
+            runHook postCheck
+          '';
+        });
+
         checks.default = pkgs.runCommand "check-default" { } ''
           echo ${self.packages.${system}.default} >/dev/null
+          echo ${self.checks.${system}.tests} >/dev/null
+          echo ${self.checks.${system}.gui} >/dev/null
           touch $out
         '';
 
